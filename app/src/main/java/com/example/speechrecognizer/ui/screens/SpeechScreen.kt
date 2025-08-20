@@ -1,6 +1,5 @@
 package com.example.speechrecognizer.ui.screens
 
-
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -19,19 +18,19 @@ import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.navigation.NavController
+import com.example.speechrecognizer.data.QuestionsRepository
 import com.example.speechrecognizer.navigation.Screen
 
 @Composable
 fun SpeechScreen(navController: NavController) {
     val context = LocalContext.current
-    var resultText by remember { mutableStateOf("Нажмите кнопку и начните говорить") }
-    var fullText by remember { mutableStateOf("") }
+
+    var currentQuestionIndex by remember { mutableStateOf(0) }
+    var currentQuestion by remember { mutableStateOf(QuestionsRepository.questions.first()) }
+    var answerText by remember { mutableStateOf("") }
     var isListening by remember { mutableStateOf(false) }
 
-    val speechRecognizer = remember {
-        SpeechRecognizer.createSpeechRecognizer(context)
-    }
-
+    val speechRecognizer = remember { SpeechRecognizer.createSpeechRecognizer(context) }
     val intent = remember {
         Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
@@ -40,32 +39,51 @@ fun SpeechScreen(navController: NavController) {
         }
     }
 
+    fun goToNextQuestionOrFinish() {
+        if (currentQuestionIndex < QuestionsRepository.questions.lastIndex) {
+            currentQuestionIndex++
+            currentQuestion = QuestionsRepository.questions[currentQuestionIndex]
+            answerText = ""
+            // restart listening
+            speechRecognizer.startListening(intent)
+            isListening = true
+        } else {
+            navController.navigate(Screen.Result.route)
+        }
+    }
+
     val recognitionListener = object : RecognitionListener {
         override fun onReadyForSpeech(params: Bundle?) {
-            resultText = "Говорите..."
+            answerText = "Говорите..."
         }
-
         override fun onBeginningOfSpeech() {}
         override fun onRmsChanged(rmsdB: Float) {}
         override fun onBufferReceived(buffer: ByteArray?) {}
-        override fun onEndOfSpeech() {
-            isListening = false
-        }
-
+        override fun onEndOfSpeech() { isListening = false }
         override fun onError(error: Int) {
-            resultText = "Ошибка распознавания: $error"
+            answerText = "Ошибка распознавания: $error"
             isListening = false
         }
-
         override fun onResults(results: Bundle?) {
             val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
             val recognized = matches?.getOrNull(0) ?: "Ничего не распознано"
-            fullText += " $recognized"
-            resultText = recognized
 
-            // restart recognition automatically
-            if (isListening) {
+            // Check if "готово" was said
+            val cleaned = recognized.replace("готово", "", ignoreCase = true).trim()
+
+            if (cleaned.isNotEmpty()) {
+                // Save only the actual answer
+                AnswersHolder.answers[currentQuestionIndex] = cleaned
+                answerText = cleaned
+            }
+
+            if (recognized.contains("готово", ignoreCase = true)) {
+                // Move on if keyword spoken
+                goToNextQuestionOrFinish()
+            } else {
+                // Otherwise continue listening for the same question
                 speechRecognizer.startListening(intent)
+                isListening = true
             }
         }
 
@@ -75,6 +93,22 @@ fun SpeechScreen(navController: NavController) {
 
     DisposableEffect(Unit) {
         speechRecognizer.setRecognitionListener(recognitionListener)
+
+        // 🔹 Start listening immediately
+        if (ContextCompat.checkSelfPermission(
+                context, Manifest.permission.RECORD_AUDIO
+            ) == PackageManager.PERMISSION_GRANTED
+        ) {
+            speechRecognizer.startListening(intent)
+            isListening = true
+        } else {
+            ActivityCompat.requestPermissions(
+                context as ComponentActivity,
+                arrayOf(Manifest.permission.RECORD_AUDIO),
+                1
+            )
+        }
+
         onDispose { speechRecognizer.destroy() }
     }
 
@@ -85,48 +119,29 @@ fun SpeechScreen(navController: NavController) {
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text(text = resultText, style = MaterialTheme.typography.bodyLarge)
+        Text(text = "Вопрос: $currentQuestion", style = MaterialTheme.typography.titleLarge)
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(text = "Ваш ответ: $answerText", style = MaterialTheme.typography.bodyLarge)
 
         Spacer(modifier = Modifier.height(32.dp))
 
         Button(
             onClick = {
-                if (!isListening) {
-                    if (ContextCompat.checkSelfPermission(
-                            context,
-                            Manifest.permission.RECORD_AUDIO
-                        ) != PackageManager.PERMISSION_GRANTED
-                    ) {
-                        ActivityCompat.requestPermissions(
-                            context as ComponentActivity,
-                            arrayOf(Manifest.permission.RECORD_AUDIO),
-                            1
-                        )
-                    } else {
-                        isListening = true
-                        speechRecognizer.startListening(intent)
-                    }
-                } else {
+                if (isListening) {
                     isListening = false
                     speechRecognizer.stopListening()
-                    // Navigate to results screen with collected text
-                    navController.navigate(Screen.Result.route) {
-                        launchSingleTop = true
-                    }
+                } else {
+                    isListening = true
+                    speechRecognizer.startListening(intent)
                 }
             }
         ) {
-            Text(if (isListening) "⏹ Остановить" else "🎤 Начать")
+            Text(if (isListening) "⏹ Остановить" else "🎤 Слушать")
         }
-    }
-
-    // Save recognized text in a shared state holder
-    LaunchedEffect(fullText) {
-        RecognizedTextHolder.text = fullText.trim()
     }
 }
 
-// Singleton state holder (simple for now)
-object RecognizedTextHolder {
-    var text: String by mutableStateOf("")
+// Simple holder for answers (later can be Room DB)
+object AnswersHolder {
+    val answers = mutableMapOf<Int, String>()
 }
