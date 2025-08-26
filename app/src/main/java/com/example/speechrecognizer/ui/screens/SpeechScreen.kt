@@ -4,9 +4,13 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import android.speech.tts.TextToSpeech
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
@@ -18,19 +22,22 @@ import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.navigation.NavController
-import com.example.speechrecognizer.data.QuestionsRepository
+import com.example.speechrecognizer.data.QuestionService
 import com.example.speechrecognizer.navigation.Screen
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 @Composable
 fun SpeechScreen(navController: NavController) {
+    val stopWord = "готово"
     val context = LocalContext.current
 
-    var currentQuestionIndex by remember { mutableStateOf(0) }
-    var currentQuestion by remember { mutableStateOf(QuestionsRepository.questions.first()) }
+    var currentQuestion by remember { mutableStateOf("Загрузка...") }
     var answerText by remember { mutableStateOf("") }
     var isListening by remember { mutableStateOf(false) }
 
     val speechRecognizer = remember { SpeechRecognizer.createSpeechRecognizer(context) }
+    val service = remember { QuestionService.instance }
     val intent = remember {
         Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
@@ -39,18 +46,30 @@ fun SpeechScreen(navController: NavController) {
         }
     }
 
-    fun goToNextQuestionOrFinish() {
-        if (currentQuestionIndex < QuestionsRepository.questions.lastIndex) {
-            currentQuestionIndex++
-            currentQuestion = QuestionsRepository.questions[currentQuestionIndex]
-            answerText = ""
-            // restart listening
-            speechRecognizer.startListening(intent)
-            isListening = true
-        } else {
-            navController.navigate(Screen.Result.route)
+    // Load first question
+    LaunchedEffect(Unit) {
+        service.getNextQuestion { q ->
+            currentQuestion = q ?: "Ошибка загрузки вопроса"
         }
     }
+
+    val scope = rememberCoroutineScope()
+
+    fun goToNextQuestion(answer: String) {
+        service.sendAnswer(answer) { nextQ ->
+            scope.launch(Dispatchers.Main) {
+                if (nextQ.isNullOrEmpty()) {
+                    navController.navigate(Screen.Result.route)
+                } else {
+                    currentQuestion = nextQ
+                    answerText = ""
+                    speechRecognizer.startListening(intent)
+                    isListening = true
+                }
+            }
+        }
+    }
+
 
     val recognitionListener = object : RecognitionListener {
         override fun onReadyForSpeech(params: Bundle?) {
@@ -61,34 +80,50 @@ fun SpeechScreen(navController: NavController) {
         override fun onBufferReceived(buffer: ByteArray?) {}
         override fun onEndOfSpeech() { isListening = false }
         override fun onError(error: Int) {
-            answerText = "Ошибка распознавания: $error"
-            isListening = false
-        }
-        override fun onResults(results: Bundle?) {
-            val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-            val recognized = matches?.getOrNull(0) ?: "Ничего не распознано"
-
-            // Check if "готово" was said
-            val cleaned = recognized.replace("готово", "", ignoreCase = true).trim()
-
-            if (cleaned.isNotEmpty()) {
-                // Save only the actual answer
-                AnswersHolder.answers[currentQuestionIndex] = cleaned
-                answerText = cleaned
-            }
-
-            if (recognized.contains("готово", ignoreCase = true)) {
-                // Move on if keyword spoken
-                goToNextQuestionOrFinish()
-            } else {
-                // Otherwise continue listening for the same question
+//            answerText = speechError(error)
+//            isListening = false
+            Handler(Looper.getMainLooper()).post {
                 speechRecognizer.startListening(intent)
                 isListening = true
             }
-        }
 
-        override fun onPartialResults(partialResults: Bundle?) {}
+        }
+        override fun onResults(results: Bundle?) {
+            val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+            onAnyResults(matches)
+            Log.d("MVR", "onResults: ${matches?.joinToString(", ") ?: "Nothing"}")
+        }
+        override fun onPartialResults(partialResults: Bundle?) {
+            val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+//            onAnyResults(matches)
+            Log.d("MVR", "onPartialResults: ${matches?.joinToString(", ") ?: "Nothing"}")
+        }
         override fun onEvent(eventType: Int, params: Bundle?) {}
+
+        fun onAnyResults(matches: ArrayList<String>?) {
+            // 🔹 Find first variant that contains "готово"
+            val withDone = matches?.firstOrNull { it.contains(stopWord, ignoreCase = true) }
+
+            // 🔹 If found, clean it, otherwise fallback to first variant
+            val recognized = withDone ?: (matches?.get(0) ?: "")
+            val hasDoneWord = recognized.contains(stopWord, ignoreCase = true)
+            val cleaned = recognized.replace(stopWord, "", ignoreCase = true).trim()
+
+
+            if (cleaned.isNotEmpty()) {
+                answerText = cleaned
+            }
+
+            if (hasDoneWord) {
+                goToNextQuestion(cleaned)
+            } else {
+                // keep listening for the same question
+                Handler(Looper.getMainLooper()).post {
+                    speechRecognizer.startListening(intent)
+                    isListening = true
+                }
+            }
+        }
     }
 
     DisposableEffect(Unit) {
@@ -139,9 +174,4 @@ fun SpeechScreen(navController: NavController) {
             Text(if (isListening) "⏹ Остановить" else "🎤 Слушать")
         }
     }
-}
-
-// Simple holder for answers (later can be Room DB)
-object AnswersHolder {
-    val answers = mutableMapOf<Int, String>()
 }
