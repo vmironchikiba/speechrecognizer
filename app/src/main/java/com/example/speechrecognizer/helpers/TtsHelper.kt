@@ -13,7 +13,10 @@ class TtsHelper(context: Context) : TextToSpeech.OnInitListener {
 
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
-            val result = tts?.setLanguage(Locale("ru", "RU")) // Russian
+            val result = tts?.setLanguage(
+                Locale.Builder().setLanguage("ru").setRegion("RU").build()
+            )
+
             if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
                 println("❌ Russian language not supported on this device")
             }

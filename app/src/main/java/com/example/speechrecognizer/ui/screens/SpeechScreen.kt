@@ -26,15 +26,32 @@ import com.example.speechrecognizer.data.QuestionService
 import com.example.speechrecognizer.navigation.Screen
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 @Composable
 fun SpeechScreen(navController: NavController) {
     val stopWord = "готово"
     val context = LocalContext.current
+    var tts by remember { mutableStateOf<TextToSpeech?>(null) }
 
     var currentQuestion by remember { mutableStateOf("Загрузка...") }
     var answerText by remember { mutableStateOf("") }
     var isListening by remember { mutableStateOf(false) }
+
+//    val tts = remember {
+//        TextToSpeech(context) { status ->
+//            if (status == TextToSpeech.SUCCESS) {
+//                val result = it.setLanguage(
+//                    Locale.Builder().setLanguage("ru").setRegion("RU").build()
+//                )
+//                if (result == TextToSpeech.LANG_MISSING_DATA ||
+//                    result == TextToSpeech.LANG_NOT_SUPPORTED
+//                ) {
+//                    Log.e("TTS", "Язык не поддерживается")
+//                }
+//            }
+//        }
+//    }
 
     val speechRecognizer = remember { SpeechRecognizer.createSpeechRecognizer(context) }
     val service = remember { QuestionService.instance }
@@ -50,6 +67,24 @@ fun SpeechScreen(navController: NavController) {
     LaunchedEffect(Unit) {
         service.getNextQuestion { q ->
             currentQuestion = q ?: "Ошибка загрузки вопроса"
+        }
+    }
+    LaunchedEffect(Unit) {
+        tts = TextToSpeech(context) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                val locale = Locale.Builder().setLanguage("ru").setRegion("RU").build()
+                val result = tts?.setLanguage(locale)
+                if (result == TextToSpeech.LANG_MISSING_DATA ||
+                    result == TextToSpeech.LANG_NOT_SUPPORTED
+                ) {
+                    Log.e("TTS", "Язык не поддерживается")
+                }
+            }
+        }
+    }
+    LaunchedEffect(currentQuestion) {
+        if (currentQuestion.isNotEmpty() && currentQuestion != "Загрузка...") {
+            tts?.speak(currentQuestion, TextToSpeech.QUEUE_FLUSH, null, "questionId")
         }
     }
 
