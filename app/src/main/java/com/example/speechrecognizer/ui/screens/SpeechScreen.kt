@@ -30,28 +30,15 @@ import java.util.Locale
 
 @Composable
 fun SpeechScreen(navController: NavController) {
-    val stopWord = "готово"
     val context = LocalContext.current
     var tts by remember { mutableStateOf<TextToSpeech?>(null) }
+    var ttsReady by remember { mutableStateOf(false) }
 
     var currentQuestion by remember { mutableStateOf("Загрузка...") }
+    var partialBuffer by remember { mutableStateOf("") }
     var answerText by remember { mutableStateOf("") }
     var isListening by remember { mutableStateOf(false) }
-
-//    val tts = remember {
-//        TextToSpeech(context) { status ->
-//            if (status == TextToSpeech.SUCCESS) {
-//                val result = it.setLanguage(
-//                    Locale.Builder().setLanguage("ru").setRegion("RU").build()
-//                )
-//                if (result == TextToSpeech.LANG_MISSING_DATA ||
-//                    result == TextToSpeech.LANG_NOT_SUPPORTED
-//                ) {
-//                    Log.e("TTS", "Язык не поддерживается")
-//                }
-//            }
-//        }
-//    }
+    var offlineTtsAvailable by remember { mutableStateOf(true) }
 
     val speechRecognizer = remember { SpeechRecognizer.createSpeechRecognizer(context) }
     val service = remember { QuestionService.instance }
@@ -63,27 +50,63 @@ fun SpeechScreen(navController: NavController) {
         }
     }
 
+    // Silence timer
+    val silenceHandler = remember { Handler(Looper.getMainLooper()) }
+    val silenceTimeout = 5000L // 5 seconds
+
+    fun resetSilenceTimer(onTimeout: () -> Unit) {
+        silenceHandler.removeCallbacksAndMessages(null)
+        silenceHandler.postDelayed({
+            Log.d("MVR", "Silence timeout reached")
+            onTimeout()
+        }, silenceTimeout)
+    }
+
     // Load first question
     LaunchedEffect(Unit) {
         service.getNextQuestion { q ->
             currentQuestion = q ?: "Ошибка загрузки вопроса"
         }
     }
+    
     LaunchedEffect(Unit) {
         tts = TextToSpeech(context) { status ->
             if (status == TextToSpeech.SUCCESS) {
-                val locale = Locale.Builder().setLanguage("ru").setRegion("RU").build()
+                val locale = Locale("ru", "RU")
                 val result = tts?.setLanguage(locale)
+
                 if (result == TextToSpeech.LANG_MISSING_DATA ||
                     result == TextToSpeech.LANG_NOT_SUPPORTED
                 ) {
-                    Log.e("TTS", "Язык не поддерживается")
+                    offlineTtsAvailable = false
+                    Log.e("TTS", "Русский язык не поддерживается или отсутствуют данные")
+                } else {
+                    val offlineVoice = tts?.voices?.find { voice ->
+                        voice.locale.language == "ru" &&
+                                voice.locale.country == "RU" &&
+                                !voice.isNetworkConnectionRequired
+                    }
+
+                    if (offlineVoice != null) {
+                        tts?.voice = offlineVoice
+                        Log.d("TTS", "Используется оффлайн голос: ${offlineVoice.name}")
+                        ttsReady = true
+                        offlineTtsAvailable = true
+                    } else {
+                        offlineTtsAvailable = false
+                        Log.e("TTS", "Нет оффлайн-голоса для ru-RU")
+                    }
                 }
+            } else {
+                offlineTtsAvailable = false
+                Log.e("TTS", "Инициализация TTS не удалась")
             }
         }
     }
-    LaunchedEffect(currentQuestion) {
-        if (currentQuestion.isNotEmpty() && currentQuestion != "Загрузка...") {
+
+
+    LaunchedEffect(currentQuestion, ttsReady) {
+        if (ttsReady && currentQuestion.isNotEmpty() && currentQuestion != "Загрузка...") {
             tts?.speak(currentQuestion, TextToSpeech.QUEUE_FLUSH, null, "questionId")
         }
     }
@@ -91,6 +114,7 @@ fun SpeechScreen(navController: NavController) {
     val scope = rememberCoroutineScope()
 
     fun goToNextQuestion(answer: String) {
+        silenceHandler.removeCallbacksAndMessages(null) // stop silence detection
         service.sendAnswer(answer) { nextQ ->
             scope.launch(Dispatchers.Main) {
                 if (nextQ.isNullOrEmpty()) {
@@ -98,6 +122,8 @@ fun SpeechScreen(navController: NavController) {
                 } else {
                     currentQuestion = nextQ
                     answerText = ""
+                    partialBuffer = ""
+                    Log.d("MVR", "goToNextQuestion: $answerText")
                     speechRecognizer.startListening(intent)
                     isListening = true
                 }
@@ -105,66 +131,73 @@ fun SpeechScreen(navController: NavController) {
         }
     }
 
-
     val recognitionListener = object : RecognitionListener {
         override fun onReadyForSpeech(params: Bundle?) {
             answerText = "Говорите..."
-        }
-        override fun onBeginningOfSpeech() {}
-        override fun onRmsChanged(rmsdB: Float) {}
-        override fun onBufferReceived(buffer: ByteArray?) {}
-        override fun onEndOfSpeech() { isListening = false }
-        override fun onError(error: Int) {
-//            answerText = speechError(error)
-//            isListening = false
-            Handler(Looper.getMainLooper()).post {
-                speechRecognizer.startListening(intent)
-                isListening = true
-            }
-
-        }
-        override fun onResults(results: Bundle?) {
-            val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-            onAnyResults(matches)
-            Log.d("MVR", "onResults: ${matches?.joinToString(", ") ?: "Nothing"}")
-        }
-        override fun onPartialResults(partialResults: Bundle?) {
-            val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-//            onAnyResults(matches)
-            Log.d("MVR", "onPartialResults: ${matches?.joinToString(", ") ?: "Nothing"}")
-        }
-        override fun onEvent(eventType: Int, params: Bundle?) {}
-
-        fun onAnyResults(matches: ArrayList<String>?) {
-            // 🔹 Find first variant that contains "готово"
-            val withDone = matches?.firstOrNull { it.contains(stopWord, ignoreCase = true) }
-
-            // 🔹 If found, clean it, otherwise fallback to first variant
-            val recognized = withDone ?: (matches?.get(0) ?: "")
-            val hasDoneWord = recognized.contains(stopWord, ignoreCase = true)
-            val cleaned = recognized.replace(stopWord, "", ignoreCase = true).trim()
-
-
-            if (cleaned.isNotEmpty()) {
-                answerText = cleaned
-            }
-
-            if (hasDoneWord) {
-                goToNextQuestion(cleaned)
-            } else {
-                // keep listening for the same question
-                Handler(Looper.getMainLooper()).post {
+            resetSilenceTimer {
+                val cleaned = answerText.trim()
+                if (cleaned.isNotEmpty()) {
+                    goToNextQuestion(cleaned)
+                } else {
+                    speechRecognizer.cancel()
                     speechRecognizer.startListening(intent)
                     isListening = true
                 }
             }
         }
+        override fun onBeginningOfSpeech() {
+            resetSilenceTimer {
+                val cleaned = answerText.trim()
+                if (cleaned.isNotEmpty()) {
+                    goToNextQuestion(cleaned)
+                }
+            }
+        }
+        override fun onRmsChanged(rmsdB: Float) {}
+        override fun onBufferReceived(buffer: ByteArray?) {}
+        override fun onEndOfSpeech() {
+            // Don’t immediately finish; let silence timer handle it
+            Log.d("MVR", "onEndOfSpeech called")
+        }
+        override fun onError(error: Int) {
+            silenceHandler.removeCallbacksAndMessages(null)
+            Handler(Looper.getMainLooper()).post {
+                speechRecognizer.startListening(intent)
+                isListening = true
+            }
+        }
+        override fun onResults(results: Bundle?) {
+            silenceHandler.removeCallbacksAndMessages(null)
+            val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+            val finalText = matches?.firstOrNull()?.trim() ?: ""
+            goToNextQuestion(finalText)
+        }
+        override fun onPartialResults(partialResults: Bundle?) {
+            val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+            val partial = matches?.firstOrNull()?.trim() ?: ""
+            if (partial.isNotEmpty()) {
+                partialBuffer = partial
+                answerText = partial
+            }
+            Log.d("MVR", "onPartialResults: $answerText")
+
+            resetSilenceTimer {
+                val cleaned = answerText.trim()
+                if (cleaned.isNotEmpty()) {
+                    goToNextQuestion(cleaned)
+                } else {
+                    speechRecognizer.cancel()
+                    speechRecognizer.startListening(intent)
+                    isListening = true
+                }
+            }
+        }
+        override fun onEvent(eventType: Int, params: Bundle?) {}
     }
 
     DisposableEffect(Unit) {
         speechRecognizer.setRecognitionListener(recognitionListener)
 
-        // 🔹 Start listening immediately
         if (ContextCompat.checkSelfPermission(
                 context, Manifest.permission.RECORD_AUDIO
             ) == PackageManager.PERMISSION_GRANTED
@@ -179,7 +212,10 @@ fun SpeechScreen(navController: NavController) {
             )
         }
 
-        onDispose { speechRecognizer.destroy() }
+        onDispose {
+            silenceHandler.removeCallbacksAndMessages(null)
+            speechRecognizer.destroy()
+        }
     }
 
     Column(
@@ -189,6 +225,31 @@ fun SpeechScreen(navController: NavController) {
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        if (!offlineTtsAvailable) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "⚠️ Оффлайн голос для русского не найден",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Button(onClick = {
+                        val installIntent = Intent(TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA)
+                        context.startActivity(installIntent)
+                    }) {
+                        Text("📥 Установить оффлайн-голос")
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+        }
         Text(text = "Вопрос: $currentQuestion", style = MaterialTheme.typography.titleLarge)
         Spacer(modifier = Modifier.height(16.dp))
         Text(text = "Ваш ответ: $answerText", style = MaterialTheme.typography.bodyLarge)
@@ -198,15 +259,30 @@ fun SpeechScreen(navController: NavController) {
         Button(
             onClick = {
                 if (isListening) {
-                    isListening = false
-                    speechRecognizer.stopListening()
+                    service.reset { success ->
+                        if (success) {
+                            Handler(Looper.getMainLooper()).post {
+                                silenceHandler.removeCallbacksAndMessages(null)
+                                speechRecognizer.cancel()
+                                currentQuestion = "Загрузка..."
+                                partialBuffer = ""
+                                answerText = ""
+                                speechRecognizer.startListening(intent)
+                                isListening = true
+                                service.getNextQuestion { q ->
+                                    currentQuestion = q ?: "Ошибка загрузки вопроса"
+                                }
+                            }
+                        }
+                    }
+
                 } else {
                     isListening = true
                     speechRecognizer.startListening(intent)
                 }
             }
         ) {
-            Text(if (isListening) "⏹ Остановить" else "🎤 Слушать")
+            Text(if (isListening) "⏹ Сбросить" else "🎤 Слушать")
         }
     }
 }
