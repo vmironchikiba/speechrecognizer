@@ -1,5 +1,7 @@
 package com.example.speechrecognizer.ui.screens
 
+import android.os.Handler
+import android.os.Looper
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -8,6 +10,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
+import com.example.speechrecognizer.data.AnswerItem
 import com.example.speechrecognizer.data.QuestionService
 
 @Composable
@@ -15,7 +18,9 @@ fun ResultScreen(navController: NavController) {
     val scrollState = rememberScrollState()
 
     // Holds answers from server
-    var answers by remember { mutableStateOf<Map<Int, String>>(emptyMap()) }
+//    var answers by remember { mutableStateOf<Map<Int, String>>(emptyMap()) }
+    var answers by remember { mutableStateOf<List<AnswerItem>>(emptyList()) }
+
     var isLoading by remember { mutableStateOf(true) }
     val service = remember { QuestionService.instance }
 
@@ -46,15 +51,17 @@ fun ResultScreen(navController: NavController) {
             Text("Ваши ответы:", style = MaterialTheme.typography.titleLarge)
             Spacer(modifier = Modifier.height(16.dp))
 
-            answers.forEach { (index, answer) ->
+            answers.forEach { item ->
                 Column(modifier = Modifier.padding(bottom = 16.dp)) {
-                    Text("Вопрос #${index + 1}", style = MaterialTheme.typography.bodyLarge)
+                    Text(item.question, style = MaterialTheme.typography.bodyLarge)
                     TextField(
-                        value = answer,
+                        value = item.answer,
                         onValueChange = { newText ->
-                            // Update local state
-                            answers = answers.toMutableMap().apply {
-                                this[index] = newText
+                            answers = answers.toMutableList().apply {
+                                val idx = indexOfFirst { it.id == item.id }
+                                if (idx != -1) {
+                                    this[idx] = this[idx].copy(answer = newText)
+                                }
                             }
                         },
                         modifier = Modifier.fillMaxWidth()
@@ -65,16 +72,18 @@ fun ResultScreen(navController: NavController) {
             Spacer(modifier = Modifier.height(24.dp))
 
             Button(onClick = {
-//                service.sendFinalResults(answers) { success ->
-//                    if (success) {
-//                        println("✅ Результаты успешно отправлены: $answers")
-//                        // TODO: maybe navigate back to start screen
-//                    } else {
-//                        println("❌ Ошибка отправки")
-//                    }
-//                }
+                service.reset { success ->
+                    if (success) {
+                        println("✅ База данных очищена")
+                        Handler(Looper.getMainLooper()).post {
+                            navController.popBackStack() // now runs on UI thread
+                        } // go back to SpeechScreen
+                    } else {
+                        println("❌ Ошибка при очистке БД")
+                    }
+                }
             }) {
-                Text("✅ Отправить")
+                Text("🔄 Reset")
             }
         }
     }
