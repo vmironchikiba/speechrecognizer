@@ -12,15 +12,15 @@ import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 import com.example.speechrecognizer.data.AnswerItem
 import com.example.speechrecognizer.data.QuestionService
+import com.example.speechrecognizer.navigation.Screen
+import androidx.compose.ui.tooling.preview.Preview
+import androidx.navigation.compose.rememberNavController
+
+
 
 @Composable
 fun ResultScreen(navController: NavController) {
-    val scrollState = rememberScrollState()
-
-    // Holds answers from server
-//    var answers by remember { mutableStateOf<Map<Int, String>>(emptyMap()) }
     var answers by remember { mutableStateOf<List<AnswerItem>>(emptyList()) }
-
     var isLoading by remember { mutableStateOf(true) }
     val service = remember { QuestionService.instance }
 
@@ -33,6 +33,44 @@ fun ResultScreen(navController: NavController) {
             isLoading = false
         }
     }
+
+    ResultScreenContent(
+        answers = answers,
+        isLoading = isLoading,
+        onAnswerChange = { id, newText ->
+            answers = answers.toMutableList().apply {
+                val idx = indexOfFirst { it.id == id }
+                if (idx != -1) {
+                    this[idx] = this[idx].copy(answer = newText)
+                }
+            }
+        },
+        onResetClick = {
+            service.reset { success ->
+                if (success) {
+                    Handler(Looper.getMainLooper()).post {
+                        navController.popBackStack()
+                        navController.navigate(Screen.Home.route) {
+                            popUpTo(Screen.Home.route) { inclusive = true }
+                            launchSingleTop = true
+                        }
+                    }
+                } else {
+                    println("❌ Ошибка при очистке БД")
+                }
+            }
+        }
+    )
+}
+
+@Composable
+fun ResultScreenContent(
+    answers: List<AnswerItem>,
+    isLoading: Boolean,
+    onAnswerChange: (Int, String) -> Unit,
+    onResetClick: () -> Unit
+) {
+    val scrollState = rememberScrollState()
 
     if (isLoading) {
         Box(
@@ -56,14 +94,7 @@ fun ResultScreen(navController: NavController) {
                     Text(item.question, style = MaterialTheme.typography.bodyLarge)
                     TextField(
                         value = item.answer,
-                        onValueChange = { newText ->
-                            answers = answers.toMutableList().apply {
-                                val idx = indexOfFirst { it.id == item.id }
-                                if (idx != -1) {
-                                    this[idx] = this[idx].copy(answer = newText)
-                                }
-                            }
-                        },
+                        onValueChange = { newText -> onAnswerChange(item.id, newText) },
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
@@ -71,20 +102,41 @@ fun ResultScreen(navController: NavController) {
 
             Spacer(modifier = Modifier.height(24.dp))
 
-            Button(onClick = {
-                service.reset { success ->
-                    if (success) {
-                        println("✅ База данных очищена")
-                        Handler(Looper.getMainLooper()).post {
-                            navController.popBackStack() // now runs on UI thread
-                        } // go back to SpeechScreen
-                    } else {
-                        println("❌ Ошибка при очистке БД")
-                    }
-                }
-            }) {
+            Button(onClick = onResetClick) {
                 Text("🔄 Reset")
             }
         }
+    }
+}
+
+@Preview(showBackground = true, showSystemUi = true)
+@Composable
+fun ResultScreenPreview() {
+    val previewAnswers = listOf(
+        AnswerItem(id = 1, qIndex = 0, question = "What is your name?", answer = "Alice"),
+        AnswerItem(id = 2, qIndex = 1, question = "What is your favorite color?", answer = "Blue"),
+        AnswerItem(id = 3, qIndex = 2, question = "What is your hobby?", answer = "Cycling")
+    )
+
+    MaterialTheme {
+        ResultScreenContent(
+            answers = previewAnswers,
+            isLoading = false,
+            onAnswerChange = { _, _ -> },
+            onResetClick = {}
+        )
+    }
+}
+
+@Preview(showBackground = true, showSystemUi = true)
+@Composable
+fun ResultScreenLoadingPreview() {
+    MaterialTheme {
+        ResultScreenContent(
+            answers = emptyList(),
+            isLoading = true,
+            onAnswerChange = { _, _ -> },
+            onResetClick = {}
+        )
     }
 }

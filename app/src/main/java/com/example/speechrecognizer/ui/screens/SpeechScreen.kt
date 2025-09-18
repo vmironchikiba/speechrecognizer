@@ -28,6 +28,9 @@ import com.example.speechrecognizer.navigation.Screen
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.util.Locale
+import android.media.AudioManager
+import android.media.ToneGenerator
+
 
 @Composable
 fun SpeechScreen(navController: NavController) {
@@ -161,6 +164,10 @@ fun SpeechScreen(navController: NavController) {
     val recognitionListener = object : RecognitionListener {
         override fun onReadyForSpeech(params: Bundle?) {
             answerText = "Говорите..."
+            // 🔊 Play short tone
+            val toneGen = ToneGenerator(AudioManager.STREAM_MUSIC, 100)
+            toneGen.startTone(ToneGenerator.TONE_SUP_PIP, 1500) // 150 ms beep
+
             resetSilenceTimer {
                 val cleaned = answerText.trim()
                 if (cleaned.isNotEmpty()) goToNextQuestion(cleaned)
