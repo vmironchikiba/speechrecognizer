@@ -33,13 +33,12 @@ import android.media.ToneGenerator
 
 
 @Composable
-fun SpeechScreen(navController: NavController) {
+fun SpeechVoiceScreen(navController: NavController) {
     val context = LocalContext.current
     var tts by remember { mutableStateOf<TextToSpeech?>(null) }
     var ttsReady by remember { mutableStateOf(false) }
 
     var currentQuestion by remember { mutableStateOf("Загрузка...") }
-    var partialBuffer by remember { mutableStateOf("") }
     var answerText by remember { mutableStateOf("") }
     var isListening by remember { mutableStateOf(false) }
     var offlineTtsAvailable by remember { mutableStateOf(true) }
@@ -54,21 +53,14 @@ fun SpeechScreen(navController: NavController) {
         }
     }
 
-    val silenceHandler = remember { Handler(Looper.getMainLooper()) }
-    val silenceTimeout = 5000L // 5 sec
     val scope = rememberCoroutineScope()
 
-    fun resetSilenceTimer(onTimeout: () -> Unit) {
-        silenceHandler.removeCallbacksAndMessages(null)
-        silenceHandler.postDelayed({
-            Log.d("MVR", "Silence timeout reached")
-            onTimeout()
-        }, silenceTimeout)
-    }
+    val stopKeyword = "стоп"
 
     /** === Flow control === */
     fun startListeningWithDelay() {
         Handler(Looper.getMainLooper()).postDelayed({
+            speechRecognizer.cancel()
             speechRecognizer.startListening(intent)
             isListening = true
         }, 1000) // 1 sec gap
@@ -82,20 +74,30 @@ fun SpeechScreen(navController: NavController) {
     }
 
     fun goToNextQuestion(answer: String) {
-        silenceHandler.removeCallbacksAndMessages(null)
-        service.sendAnswer(answer) { nextQ ->
+        Log.d("MVR", "goToNextQuestion")
+        val cleanedAnswer = answer.trim()
+
+        // 🔒 Skip if answer is empty (user only said "стоп")
+        if (cleanedAnswer.isEmpty()) {
+            Log.d("MVR", "Empty answer ignored, waiting for valid input")
+            startListeningWithDelay() // keep listening for next try
+            return
+        }
+
+        service.sendAnswer(cleanedAnswer) { nextQ ->
             scope.launch(Dispatchers.Main) {
+                Log.d("MVR", "sendAnswer")
                 if (nextQ.isNullOrEmpty()) {
                     navController.navigate(Screen.Result.route)
                 } else {
                     currentQuestion = nextQ
                     answerText = ""
-                    partialBuffer = ""
                     // ⚠️ Don’t start STT here — TTS will do it
                 }
             }
         }
     }
+
 
     /** === Init: load first question === */
     LaunchedEffect(Unit) {
@@ -112,7 +114,7 @@ fun SpeechScreen(navController: NavController) {
                 val result = tts?.setLanguage(locale)
                 if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
                     offlineTtsAvailable = false
-                    Log.e("TTS", "Русский язык не поддерживается или отсутствуют данные")
+                    Log.e("MVR", "Русский язык не поддерживается или отсутствуют данные")
                 } else {
                     val offlineVoice = tts?.voices?.find { v ->
                         v.locale.language == "ru" && v.locale.country == "RU" && !v.isNetworkConnectionRequired
@@ -121,7 +123,7 @@ fun SpeechScreen(navController: NavController) {
                         tts?.voice = offlineVoice
                         tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                             override fun onStart(utteranceId: String?) {
-                                Log.d("TTS", "Speaking started → stop STT")
+                                Log.d("MVR", "Speaking started → stop STT")
                                 Handler(Looper.getMainLooper()).post {
                                     if (isListening) {
                                         speechRecognizer.cancel()
@@ -131,26 +133,26 @@ fun SpeechScreen(navController: NavController) {
                             }
 
                             override fun onDone(utteranceId: String?) {
-                                Log.d("TTS", "Speaking finished → STT in 1 sec")
+                                Log.d("MVR", "Speaking finished → STT in 1 sec")
                                 startListeningWithDelay()
                             }
 
                             override fun onError(utteranceId: String?) {
-                                Log.e("TTS", "Error in TTS")
+                                Log.e("MVR", "Error in TTS")
                                 startListeningWithDelay()
                             }
                         })
-                        Log.d("TTS", "Используется оффлайн голос: ${offlineVoice.name}")
+                        Log.d("MVR", "Используется оффлайн голос: ${offlineVoice.name}")
                         ttsReady = true
                         offlineTtsAvailable = true
                     } else {
                         offlineTtsAvailable = false
-                        Log.e("TTS", "Нет оффлайн-голоса для ru-RU")
+                        Log.e("MVR", "Нет оффлайн-голоса для ru-RU")
                     }
                 }
             } else {
                 offlineTtsAvailable = false
-                Log.e("TTS", "Инициализация TTS не удалась")
+                Log.e("MVR", "Инициализация TTS не удалась")
             }
         }
     }
@@ -163,50 +165,52 @@ fun SpeechScreen(navController: NavController) {
     /** === STT listener === */
     val recognitionListener = object : RecognitionListener {
         override fun onReadyForSpeech(params: Bundle?) {
+            Log.d("MVR", "onReadyForSpeech")
             answerText = "Говорите..."
             // 🔊 Play short tone
             val toneGen = ToneGenerator(AudioManager.STREAM_MUSIC, 100)
             toneGen.startTone(ToneGenerator.TONE_SUP_PIP, 1500) // 150 ms beep
 
-            resetSilenceTimer {
-                val cleaned = answerText.trim()
-                if (cleaned.isNotEmpty()) goToNextQuestion(cleaned)
-                else startListeningWithDelay()
-            }
         }
         override fun onBeginningOfSpeech() {
-            resetSilenceTimer {
-                val cleaned = answerText.trim()
-                if (cleaned.isNotEmpty()) goToNextQuestion(cleaned)
-            }
+            Log.d("MVR", "onBeginningOfSpeech")
         }
         override fun onRmsChanged(rmsdB: Float) {}
-        override fun onBufferReceived(buffer: ByteArray?) {}
+        override fun onBufferReceived(buffer: ByteArray?) {Log.d("MVR", "onBufferReceived")}
         override fun onEndOfSpeech() { Log.d("MVR", "onEndOfSpeech") }
         override fun onError(error: Int) {
-            silenceHandler.removeCallbacksAndMessages(null)
+            Log.e("MVR", "onError ->> $error")
             startListeningWithDelay()
         }
-        override fun onResults(results: Bundle?) {
-            silenceHandler.removeCallbacksAndMessages(null)
-            val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-            val finalText = matches?.firstOrNull()?.trim() ?: ""
-            goToNextQuestion(finalText)
-        }
         override fun onPartialResults(partialResults: Bundle?) {
+            Log.d("MVR", "onPartialResults")
             val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-            val partial = matches?.firstOrNull()?.trim() ?: ""
+            val partial = matches?.firstOrNull()?.trim()?.lowercase(Locale.getDefault()) ?: ""
             if (partial.isNotEmpty()) {
-                partialBuffer = partial
                 answerText = partial
             }
-            resetSilenceTimer {
-                val cleaned = answerText.trim()
-                if (cleaned.isNotEmpty()) goToNextQuestion(cleaned)
-                else startListeningWithDelay()
+
+            // ✅ If keyword detected → finalize answer immediately
+            if (partial.contains(stopKeyword)) {
+                val cleaned = answerText.replace(stopKeyword, "", ignoreCase = true).trim()
+                goToNextQuestion(cleaned)
             }
         }
-        override fun onEvent(eventType: Int, params: Bundle?) {}
+
+        override fun onResults(results: Bundle?) {
+            Log.d("MVR", "onResults")
+            val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+            val finalText = matches?.firstOrNull()?.trim()?.lowercase(Locale.getDefault()) ?: ""
+            if (finalText.contains(stopKeyword)) {
+                val cleaned = finalText.replace(stopKeyword, "", ignoreCase = true).trim()
+                goToNextQuestion(cleaned)
+            } else {
+                startListeningWithDelay()
+  //              goToNextQuestion(finalText)
+            }
+        }
+
+        override fun onEvent(eventType: Int, params: Bundle?) {Log.d("MVR", "onEvent")}
     }
 
     /** === Lifecycle === */
@@ -223,7 +227,6 @@ fun SpeechScreen(navController: NavController) {
         }
 
         onDispose {
-            silenceHandler.removeCallbacksAndMessages(null)
             speechRecognizer.destroy()
         }
     }
@@ -273,10 +276,8 @@ fun SpeechScreen(navController: NavController) {
                 service.reset { success ->
                     if (success) {
                         Handler(Looper.getMainLooper()).post {
-                            silenceHandler.removeCallbacksAndMessages(null)
                             speechRecognizer.cancel()
                             currentQuestion = "Загрузка..."
-                            partialBuffer = ""
                             answerText = ""
                             service.getNextQuestion { q ->
                                 currentQuestion = q ?: "Ошибка загрузки вопроса"

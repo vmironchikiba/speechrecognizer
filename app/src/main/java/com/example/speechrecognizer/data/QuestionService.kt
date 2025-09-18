@@ -28,7 +28,7 @@ private val baseUrl = "http://Mironchik-VRvm.iba:4000" // emulator -> localhost 
             override fun onResponse(call: Call, response: Response) {
                 response.use {
                     val body = it.body?.string()
-                    val question = JSONObject(body).optString("question", "")
+                    val question = JSONObject(body?:"").optString("question", "")
                     callback(question)
                 }
             }
